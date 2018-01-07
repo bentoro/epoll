@@ -5,6 +5,7 @@ static int CreateAndBind(char *port);
 static int SetNonBlocking(int fd);
 
 #define MAXEVENTS 64
+#define BUFLEN 1024
 
 int main(void){
     int sfd, s, efd;
@@ -100,10 +101,37 @@ int main(void){
                 }
                 continue;
             } else {
-                echo((epoll_data*)event.data.ptr);
+                int done = 0;
+
+                while(1){
+                    ssize_t count;
+                    char buf[BUFLEN];
+                    
+                    count = read (events[i].data.fd, buf, sizeof(buf));
+                    if(count == -1){
+                        if(errno != EAGAIN){
+                            perror("read");
+                            done = 1;
+                        }
+                        break;
+                    }
+                    else if(count == 0){
+                        //end of file or connection has closed
+                        done = 1;
+                        break;
+                    }
+                    s = write(1, buf, count);
+                    if(s == -1){
+                        perror("write");
+                        abort();
+                    }
+                }
+                if(done){
+                    printf("Closed connection %d\n",events[i].data.fd);
+                    close(events[i].data.fd);
+                }
             }
         }
-
     }
     free(events);
     close(sfd);
