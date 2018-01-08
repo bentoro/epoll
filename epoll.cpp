@@ -1,60 +1,68 @@
 #include <stdio.h>
-#include <epoll.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <iostream>
+#include <netdb.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
 
-static int CreateAndBind(char *port);
-static int SetNonBlocking(int fd);
+int CreateAndBind(char *port);
+int SetNonBlocking(int fd);
 
 #define MAXEVENTS 64
 #define BUFLEN 1024
 
-int main(void){
+int main(int argc, char *argv[]){
     int sfd, s, efd;
     struct epoll_event event;
     struct epoll_event *events;
 
     if(argc != 2){
-        fprintf(stderr, "Usage: %s [port]\n" argv[0]);
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "Usage: %s [port]\n", argv[0]);
+        exit(1);
     }
 
-    sfd = CreateAndBind(agrv[1]);
+    sfd = CreateAndBind(argv[1]);
     if(sfd == -1){
-        abort();
+        exit(0);
     }
     s = SetNonBlocking(sfd);
     if(s == -1){
-        abort();
+        exit(0);
     }
     s = listen(sfd, 2);
     if(s == -1){
         perror("listening error");
-        abort();
+        exit(0);
     }
 
     efd = epoll_create1(0);
     if(efd == -1){
-        perror("epollcreate1 error");
-        abort();
+        perror("epoll create1 error");
+        exit(0);
     }
 
     event.data.fd = sfd;
-    event.events = EPOLLIN | EPOLLET;
-    s = epoll_ctl(efd, EPOLL_CTL_ADD
+    event.events = EPOLLIN | EPOLLET | EPOLLEXCLUSIVE;
+    s = epoll_ctl(efd, EPOLL_CTL_ADD, sfd, &event);
 
-    events = calloc(MAXEVENTS, sizeof(event));
     if(s == -1){
         perror("epoll_ctl error");
-        abort();
+        exit(0);
     }
 
-    events = calloc(2, sizeof(event));
+    events = (epoll_event*)calloc(MAXEVENTS, sizeof(event));
 
     while(1){
         int n, i;
 
         n = epoll_wait(efd, events, MAXEVENTS, -1);
         for(i = 0; i<n; i++){
-            if((events[i].events & EPOLLERR) ||(events[i].events &EPOLLUP)) {
+            if((events[i].events & EPOLLERR) ||(events[i].events &EPOLLHUP)) {
                 //socket closed or socket is not ready for reading
                 fprintf(stderr, "epoll error\n");
                 close(events[i].data.fd);
@@ -70,7 +78,7 @@ int main(void){
                     in_len = sizeof(in_addr);
                     infd = accept(sfd, &in_addr, &in_len);
                     if(infd == -1){
-                        if ((errno == EGAIN) || (errno == EWOULDBLOCK)){
+                        if ((errno == EAGAIN) || (errno == EWOULDBLOCK)){
                             //processed all incoming connections
                             break;
                         } else {
@@ -82,13 +90,13 @@ int main(void){
                     s = getnameinfo(&in_addr, in_len, hbuf, sizeof(hbuf),sbuf,sizeof(sbuf), NI_NUMERICHOST | NI_NUMERICSERV);
 
                     if(s==0){
-                        printf"Accepted connection on descriptor %d " "(host=%s, port=%s)\n", infd, hbuf, sbuf);
+                        printf("Accepted connection on descriptor %d " "(host=%s, port=%s)\n", infd, hbuf, sbuf);
                     }
                     //makine incoming socket non-blocking and add to list
 
                     s = SetNonBlocking(infd);
                     if(s == -1){
-                        abort();
+                        exit(0);
                     }
 
                     event.data.fd = infd;
@@ -96,7 +104,7 @@ int main(void){
                     s = epoll_ctl(efd, EPOLL_CTL_ADD, infd, &event);
                     if(s == -1){
                         perror("epoll_ctl");
-                        abort();
+                        exit(0);
                     }
                 }
                 continue;
@@ -106,7 +114,6 @@ int main(void){
                 while(1){
                     ssize_t count;
                     char buf[BUFLEN];
-                    
                     count = read (events[i].data.fd, buf, sizeof(buf));
                     if(count == -1){
                         if(errno != EAGAIN){
@@ -123,7 +130,7 @@ int main(void){
                     s = write(1, buf, count);
                     if(s == -1){
                         perror("write");
-                        abort();
+                        exit(0);
                     }
                 }
                 if(done){
@@ -138,14 +145,13 @@ int main(void){
     return 0;
 }
 
-static int CreateAndBind(char *port){
+int CreateAndBind(char *port){
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     int ga, sfd;
-    
 
     //defining getaddrinfo function
-    memset(&hints, - sizeof(struct addrinfo)); //zeroing the structure
+    memset(&hints,0, sizeof(struct addrinfo));//zeroing the structure
     hints.ai_family = AF_UNSPEC; //use IPv4 or IPv6
     hints.ai_socktype = SOCK_STREAM; //use TCP socket
     hints.ai_flags = AI_PASSIVE; //pass NULL in nodename if using AI_PASSIVE
@@ -177,23 +183,24 @@ static int CreateAndBind(char *port){
     freeaddrinfo(result); //done with struct
 
     return sfd;
+
 }
 
-static int SetNonBlocking(int fd){
-    int flags,s;
-    //fetch status flag of file descriptor
-    flags = fcntl(fd, F_GETFL, 0);
-    if(flags == -1){
-        perror("fcntl");
-        return -1;
-    }
-    //if file descriptor is not nonblocking
-    flags |= O_NONBLOCK;
-    s = fcntl(fd, F_SETFL, flags);
-    if(s == -1){
-        perror("fcntl");
-        return -1;
-    }
+    int SetNonBlocking(int fd){
+        int flags,s;
+        //fetch status flag of file descriptor
+        flags = fcntl(fd, F_GETFL, 0);
+        if(flags == -1){
+            perror("fcntl");
+            return -1;
+        }
+        //if file descriptor is not nonblocking
+        flags |= O_NONBLOCK;
+        s = fcntl(fd, F_SETFL, flags);
+        if(s == -1){
+            perror("fcntl");
+            return -1;
+        }
 
-    return 0;
-}
+        return 0;
+    }
